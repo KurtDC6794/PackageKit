@@ -76,6 +76,7 @@ static void
 pk_backend_install_files_thread (PkBackendJob *job, GVariant* params, gpointer p)
 {
 	PkBackend *backend = pk_backend_job_get_backend (job);
+	PkBackendAlpmPrivate *priv = pk_backend_get_user_data (backend);
 	gboolean only_trusted;
 	gchar** full_paths;
 	PkBitfield flags;
@@ -97,8 +98,23 @@ pk_backend_install_files_thread (PkBackendJob *job, GVariant* params, gpointer p
 	if (pk_bitfield_contain (flags, PK_TRANSACTION_FLAG_ENUM_ONLY_DOWNLOAD))
 		alpm_flags |= ALPM_TRANS_FLAG_DOWNLOADONLY;
 
-	if (pk_alpm_transaction_initialize (job, alpm_flags, NULL, &error) &&
-	    pk_alpm_transaction_add_targets (job, full_paths, &error) &&
+	if (!pk_alpm_transaction_initialize (job, alpm_flags, NULL, &error))
+		goto out;
+
+	/* queue all available upgrades to prevent partial upgrades, the same
+	 * way pk_backend_sync_thread() does for InstallPackages/UpdatePackages
+	 * in pk-alpm-sync.c; a local package file can depend on newer versions
+	 * of packages already on the system, and installing it without also
+	 * upgrading the rest of the system is exactly the partial-upgrade
+	 * state Arch does not support. */
+	if (alpm_sync_sysupgrade (priv->alpm, 0) < 0) {
+		g_set_error (&error, PK_ALPM_ERROR, alpm_errno (priv->alpm),
+			     "sysupgrade: %s",
+			     alpm_strerror (alpm_errno (priv->alpm)));
+		goto out;
+	}
+
+	if (pk_alpm_transaction_add_targets (job, full_paths, &error) &&
 	    pk_alpm_transaction_simulate (job, &error)) {
 		if (pk_bitfield_contain (flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) { /* simulation */
 			pk_alpm_transaction_packages (job);

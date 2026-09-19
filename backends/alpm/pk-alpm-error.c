@@ -68,7 +68,15 @@ pk_alpm_error_emit (PkBackendJob *job, GError *error)
 		code = PK_ERROR_ENUM_FAILED_INITIALIZATION;
 		break;
 	case ALPM_ERR_HANDLE_LOCK:
-		code = PK_ERROR_ENUM_CANNOT_GET_LOCK;
+		/* PK_ERROR_ENUM_LOCK_REQUIRED (not PK_ERROR_ENUM_CANNOT_GET_LOCK) is
+		 * the code pk-transaction.c/pk-scheduler.c specifically look for:
+		 * the scheduler intercepts it, marks the transaction exclusive, and
+		 * retries automatically (up to 4 times, see pk-scheduler.c's
+		 * "Transaction Commit Logic" comment) before ever reporting a
+		 * failure to the client. Reporting CANNOT_GET_LOCK here instead
+		 * skips that retry entirely and fails the transaction on the very
+		 * first lock collision with another pacman/PackageKit instance. */
+		code = PK_ERROR_ENUM_LOCK_REQUIRED;
 		break;
 	case ALPM_ERR_DB_OPEN:
 	case ALPM_ERR_DB_NOT_FOUND:

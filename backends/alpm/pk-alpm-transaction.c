@@ -23,6 +23,7 @@
 
 #include "pk-backend-alpm.h"
 #include "pk-alpm-error.h"
+#include "pk-alpm-groups.h"
 #include "pk-alpm-packages.h"
 #include "pk-alpm-transaction.h"
 
@@ -990,6 +991,23 @@ pk_alpm_transaction_simulate (PkBackendJob *job, GError **error)
 	return FALSE;
 }
 
+static void
+pk_alpm_transaction_package_details_emit (PkBackendJob *job, alpm_pkg_t *pkg)
+{
+	g_autofree gchar *package_id = pk_alpm_pkg_build_id (pkg);
+	PkGroupEnum group = pk_group_enum_from_string (pk_alpm_pkg_get_group (pkg));
+
+	/* same fields, same accessors, and the same PkBackendJob call already
+	 * used by GetDetails in pk-alpm-packages.c; this just gives a
+	 * transaction-wide preview (PK_TRANSACTION_FLAG_ENUM_SIMULATE) the
+	 * download/installed size for every package in the plan, not only
+	 * for packages a client separately queries GetDetails on. */
+	pk_backend_job_details (job, package_id, NULL,
+				 NULL, group, alpm_pkg_get_desc (pkg),
+				 alpm_pkg_get_url (pkg), alpm_pkg_get_isize (pkg),
+				 alpm_pkg_download_size (pkg));
+}
+
 void
 pk_alpm_transaction_packages (PkBackendJob *job)
 {
@@ -1013,6 +1031,7 @@ pk_alpm_transaction_packages (PkBackendJob *job)
 		}
 
 		pk_alpm_pkg_emit (job, i->data, info);
+		pk_alpm_transaction_package_details_emit (job, i->data);
 	}
 
 	switch (pk_backend_job_get_role (job)) {
@@ -1030,6 +1049,7 @@ pk_alpm_transaction_packages (PkBackendJob *job)
 		if (pk_backend_job_is_cancelled (job))
 			break;
 		pk_alpm_pkg_emit (job, i->data, info);
+		pk_alpm_transaction_package_details_emit (job, i->data);
 	}
 }
 

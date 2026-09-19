@@ -188,10 +188,18 @@ pk_backend_get_filters (PkBackend *backend)
 gchar **
 pk_backend_get_mime_types (PkBackend *backend)
 {
-	/* packages currently use .pkg.tar.gz and .pkg.tar.xz */
+	/* pacman/makepkg's default package compression has been zstd
+	 * (.pkg.tar.zst) for years now; .gz and .xz are kept for packages
+	 * still built with an explicit PKGEXT override. Without
+	 * application/x-zstd-compressed-tar here, PackageKit's own
+	 * generic content-type gate (pk_transaction_is_supported_content_type
+	 * in src/pk-transaction.c) rejects InstallFiles/install-local for
+	 * virtually every real Arch package before the request ever reaches
+	 * this backend. */
 	const gchar *mime_types[] = {
 				"application/x-compressed-tar",
 				"application/x-xz-compressed-tar",
+				"application/x-zstd-compressed-tar",
 				NULL };
 	return g_strdupv ((gchar **) mime_types);
 }

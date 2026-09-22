@@ -27,7 +27,9 @@
 void		 pk_alpm_add_database			(PkBackend *backend,
 					                 const gchar *name,
 							 alpm_list_t *servers,
-							 alpm_siglevel_t level);
+							 alpm_siglevel_t level,
+							 alpm_list_t *cacheservers,
+							 int usage);
 
 gboolean	 pk_alpm_disable_signatures		(PkBackend *backend, GError **error);
 

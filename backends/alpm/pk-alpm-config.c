@@ -60,7 +60,8 @@ typedef struct
 typedef struct
 {
 	 gchar		*name;
-	 alpm_list_t	*servers, *siglevels;
+	 alpm_list_t	*servers, *siglevels, *cacheservers;
+	 int		 usage;
 } PkAlpmConfigSection;
 
 static PkAlpmConfig *
@@ -84,6 +85,8 @@ pk_alpm_config_section_free (gpointer data)
 	g_free (section->name);
 	alpm_list_free_inner (section->servers, g_free);
 	alpm_list_free (section->servers);
+	alpm_list_free_inner (section->cacheservers, g_free);
+	alpm_list_free (section->cacheservers);
 	FREELIST (section->siglevels);
 	g_free (section);
 }
@@ -517,6 +520,33 @@ pk_alpm_config_enter_section (PkAlpmConfig *config, const gchar *name)
 	return section;
 }
 
+static gchar *
+pk_alpm_config_expand_url (PkAlpmConfig *config, PkAlpmConfigSection *section,
+			      const gchar *address, GError **e)
+{
+	gchar *url;
+
+	url = g_regex_replace_literal (config->xrepo, address, -1, 0,
+				       section->name, 0, e);
+	if (url == NULL)
+		return NULL;
+
+	if (config->arch != NULL) {
+		g_autofree gchar *temp = url;
+		url = g_regex_replace_literal (config->xarch, temp, -1, 0,
+					       config->arch, 0, e);
+		if (url == NULL)
+			return NULL;
+	} else if (strstr (url, "$arch") != NULL) {
+		g_set_error (e, PK_ALPM_ERROR, PK_ALPM_ERR_CONFIG_INVALID,
+			     "url contained $arch, which is not set");
+		g_free (url);
+		return NULL;
+	}
+
+	return url;
+}
+
 static gboolean
 pk_alpm_config_add_server (PkAlpmConfig *config,
 			      PkAlpmConfigSection *section,
@@ -528,25 +558,62 @@ pk_alpm_config_add_server (PkAlpmConfig *config,
 	g_return_val_if_fail (section != NULL, FALSE);
 	g_return_val_if_fail (address != NULL, FALSE);
 
-	url = g_regex_replace_literal (config->xrepo, address, -1, 0,
-				       section->name, 0, e);
+	url = pk_alpm_config_expand_url (config, section, address, e);
 	if (url == NULL)
 		return FALSE;
 
-	if (config->arch != NULL) {
-		g_autofree gchar *temp = url;
-		url = g_regex_replace_literal (config->xarch, temp, -1, 0,
-					       config->arch, 0, e);
-		if (url == NULL)
-			return FALSE;
-	} else if (strstr (url, "$arch") != NULL) {
-		g_set_error (e, PK_ALPM_ERROR, PK_ALPM_ERR_CONFIG_INVALID,
-			     "url contained $arch, which is not set");
-		return FALSE;
-	}
-
 	section->servers = alpm_list_add (section->servers, g_strdup (url));
 	return TRUE;
+}
+
+static gboolean
+pk_alpm_config_add_cacheserver (PkAlpmConfig *config,
+				   PkAlpmConfigSection *section,
+				   const gchar *address, GError **e)
+{
+	g_autofree gchar *url = NULL;
+
+	g_return_val_if_fail (config != NULL, FALSE);
+	g_return_val_if_fail (section != NULL, FALSE);
+	g_return_val_if_fail (address != NULL, FALSE);
+
+	url = pk_alpm_config_expand_url (config, section, address, e);
+	if (url == NULL)
+		return FALSE;
+
+	section->cacheservers = alpm_list_add (section->cacheservers, g_strdup (url));
+	return TRUE;
+}
+
+static void
+pk_alpm_config_add_usage (PkAlpmConfigSection *section, const gchar *words)
+{
+	g_auto(GStrv) tokens = NULL;
+	gsize i;
+
+	g_return_if_fail (section != NULL);
+	g_return_if_fail (words != NULL);
+
+	tokens = g_strsplit (words, " ", -1);
+	for (i = 0; tokens[i] != NULL; ++i) {
+		if (tokens[i][0] == '\0') {
+			continue;
+		} else if (g_strcmp0 (tokens[i], "Sync") == 0) {
+			section->usage |= ALPM_DB_USAGE_SYNC;
+		} else if (g_strcmp0 (tokens[i], "Search") == 0) {
+			section->usage |= ALPM_DB_USAGE_SEARCH;
+		} else if (g_strcmp0 (tokens[i], "Install") == 0) {
+			section->usage |= ALPM_DB_USAGE_INSTALL;
+		} else if (g_strcmp0 (tokens[i], "Upgrade") == 0) {
+			section->usage |= ALPM_DB_USAGE_UPGRADE;
+		} else if (g_strcmp0 (tokens[i], "All") == 0) {
+			section->usage |= ALPM_DB_USAGE_ALL;
+		} else {
+			syslog (LOG_DAEMON | LOG_WARNING,
+				"Usage: unrecognised token '%s' in section '%s', ignoring",
+				tokens[i], section->name);
+		}
+	}
 }
 
 static void
@@ -670,6 +737,12 @@ pk_alpm_config_parse (PkAlpmConfig *config, const gchar *filename,
 				break;
 			}
 			continue;
+		} else if (g_strcmp0 (key, "CacheServer") == 0) {
+			if (!pk_alpm_config_add_cacheserver (config, section,
+								str, &e)) {
+				break;
+			}
+			continue;
 		}
 
 		if (g_strcmp0 (key, "SigLevel") == 0 && str != NULL) {
@@ -677,16 +750,8 @@ pk_alpm_config_parse (PkAlpmConfig *config, const gchar *filename,
 			continue;
 		}
 
-		/* ignore these instead of crashing; DisableSandbox (and its
-		 * Filesystem/Syscalls variants), DownloadUser, and
-		 * ParallelDownloads are now handled above via the boolean/string
-		 * dispatch tables. Usage/CacheServer are per-repo directives, not
-		 * yet wired up. */
-		if (g_strcmp0 (key, "CacheServer") == 0 && str != NULL) {
-			continue;
-		}
-
 		if (g_strcmp0 (key, "Usage") == 0 && str != NULL) {
+			pk_alpm_config_add_usage (section, str);
 			continue;
 		}
 
@@ -923,12 +988,20 @@ pk_alpm_config_configure_repos (PkBackend *backend, PkAlpmConfig *config,
 			 return FALSE;
 
 		if (!config->is_check) {
-			pk_alpm_add_database (backend, repo->name, repo->servers, repo_level);
+			pk_alpm_add_database (backend, repo->name, repo->servers, repo_level,
+						 repo->cacheservers, repo->usage);
 		} else {
 			alpm_db_t *db;
 
 			db = alpm_register_syncdb (handle, repo->name, repo_level);
 			alpm_db_set_servers (db, alpm_list_strdup (repo->servers));
+
+			/* only override alpm's own default when pacman.conf
+			 * actually set a restriction for this repo */
+			if (repo->cacheservers != NULL)
+				alpm_db_set_cache_servers (db, alpm_list_strdup (repo->cacheservers));
+			if (repo->usage != 0)
+				alpm_db_set_usage (db, repo->usage);
 		}
 	}
 

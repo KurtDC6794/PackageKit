@@ -31,6 +31,8 @@ typedef struct
 	gchar *name;
 	alpm_list_t *servers;
 	alpm_siglevel_t level;
+	alpm_list_t *cacheservers;
+	int usage;
 } PkBackendRepo;
 
 static gboolean
@@ -66,6 +68,15 @@ pk_alpm_disabled_repos_configure (PkBackend *backend, gboolean only_trusted, GEr
 		}
 
 		alpm_db_set_servers (db, alpm_list_strdup (repo->servers));
+
+		/* only override alpm's own default when pacman.conf actually
+		 * set a restriction for this repo; databases are re-registered
+		 * every time only_trusted toggles, so this must be re-applied
+		 * here rather than once elsewhere */
+		if (repo->cacheservers != NULL)
+			alpm_db_set_cache_servers (db, alpm_list_strdup (repo->cacheservers));
+		if (repo->usage != 0)
+			alpm_db_set_usage (db, repo->usage);
 	}
 
 	return TRUE;
@@ -73,7 +84,7 @@ pk_alpm_disabled_repos_configure (PkBackend *backend, gboolean only_trusted, GEr
 
 void
 pk_alpm_add_database (PkBackend *backend, const gchar *name, alpm_list_t *servers,
-			 alpm_siglevel_t level)
+			 alpm_siglevel_t level, alpm_list_t *cacheservers, int usage)
 {
 	PkBackendAlpmPrivate *priv = pk_backend_get_user_data (backend);
 	PkBackendRepo *repo = g_new (PkBackendRepo, 1);
@@ -83,6 +94,8 @@ pk_alpm_add_database (PkBackend *backend, const gchar *name, alpm_list_t *server
 	repo->name = g_strdup (name);
 	repo->servers = alpm_list_strdup (servers);
 	repo->level = level;
+	repo->cacheservers = alpm_list_strdup (cacheservers);
+	repo->usage = usage;
 
 	priv->configured_repos = alpm_list_add (priv->configured_repos, repo);
 }
@@ -118,6 +131,7 @@ pk_alpm_destroy_databases (PkBackend *backend)
 		PkBackendRepo *repo = (PkBackendRepo *) i->data;
 		g_free (repo->name);
 		FREELIST (repo->servers);
+		FREELIST (repo->cacheservers);
 		g_free (repo);
 	}
 	alpm_list_free (priv->configured_repos);

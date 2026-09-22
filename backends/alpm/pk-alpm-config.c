@@ -40,10 +40,13 @@ static gchar *xfercmd = NULL;
 typedef struct
 {
 	 gboolean		 checkspace, color, disabledownloadtimeout, ilovecandy,
-				noprogressbar, prettyprogressbar, totaldl, usesyslog, verbosepkglists, is_check;
+				noprogressbar, prettyprogressbar, totaldl, usesyslog, verbosepkglists, is_check,
+				disablesandbox, disablesandboxfilesystem, disablesandboxsyscalls;
 
 	 gchar			*arch, *cleanmethod, *dbpath, *gpgdir, *logfile,
-				*root, *xfercmd;
+				*root, *xfercmd, *downloaduser;
+
+	 guint			 paralleldownloads;
 
 	 alpm_list_t		*cachedirs, *holdpkgs, *ignoregroups,
 				*ignorepkgs, *localfilesiglevels, *noextracts,
@@ -97,6 +100,7 @@ pk_alpm_config_free (PkAlpmConfig *config)
 	g_free (config->logfile);
 	g_free (config->root);
 	g_free (config->xfercmd);
+	g_free (config->downloaduser);
 
 	FREELIST (config->cachedirs);
 	FREELIST (config->holdpkgs);
@@ -187,6 +191,30 @@ pk_alpm_config_set_verbosepkglists (PkAlpmConfig *config)
 	config->verbosepkglists = TRUE;
 }
 
+static void
+pk_alpm_config_set_disablesandbox (PkAlpmConfig *config)
+{
+	g_return_if_fail (config != NULL);
+
+	config->disablesandbox = TRUE;
+}
+
+static void
+pk_alpm_config_set_disablesandboxfilesystem (PkAlpmConfig *config)
+{
+	g_return_if_fail (config != NULL);
+
+	config->disablesandboxfilesystem = TRUE;
+}
+
+static void
+pk_alpm_config_set_disablesandboxsyscalls (PkAlpmConfig *config)
+{
+	g_return_if_fail (config != NULL);
+
+	config->disablesandboxsyscalls = TRUE;
+}
+
 typedef struct
 {
 	 const gchar	*name;
@@ -198,6 +226,9 @@ static const PkAlpmConfigBoolean pk_alpm_config_boolean_options[] = {
 	{ "CheckSpace", pk_alpm_config_set_checkspace },
 	{ "Color", pk_alpm_config_set_color },
 	{ "DisableDownloadTimeout", pk_alpm_config_set_disabledownloadtimeout },
+	{ "DisableSandbox", pk_alpm_config_set_disablesandbox },
+	{ "DisableSandboxFilesystem", pk_alpm_config_set_disablesandboxfilesystem },
+	{ "DisableSandboxSyscalls", pk_alpm_config_set_disablesandboxsyscalls },
 	{ "ILoveCandy", pk_alpm_config_set_ilovecandy },
 	{ "NoProgressBar", pk_alpm_config_set_noprogressbar },
 	{ "PrettyProgressBar", pk_alpm_config_set_prettyprogressbar },
@@ -320,6 +351,36 @@ pk_alpm_config_set_xfercmd (PkAlpmConfig *config, const gchar *command)
 	config->xfercmd = g_strdup (command);
 }
 
+static void
+pk_alpm_config_set_downloaduser (PkAlpmConfig *config, const gchar *user)
+{
+	g_return_if_fail (config != NULL);
+	g_return_if_fail (user != NULL);
+
+	g_free (config->downloaduser);
+	config->downloaduser = g_strdup (user);
+}
+
+static void
+pk_alpm_config_set_paralleldownloads (PkAlpmConfig *config, const gchar *num)
+{
+	guint64 n;
+
+	g_return_if_fail (config != NULL);
+	g_return_if_fail (num != NULL);
+
+	/* pacman.conf is root-owned/trusted, but a malformed value here
+	 * shouldn't silently become 0 (which alpm_option_set_parallel_downloads
+	 * would happily accept) or be passed through unchecked */
+	if (!g_ascii_string_to_unsigned (num, 10, 1, G_MAXUINT, &n, NULL)) {
+		syslog (LOG_DAEMON | LOG_WARNING,
+			"ParallelDownloads: '%s' is not a valid positive integer, ignoring", num);
+		return;
+	}
+
+	config->paralleldownloads = (guint) n;
+}
+
 typedef struct
 {
 	 const gchar	*name;
@@ -332,8 +393,10 @@ static const PkAlpmConfigString pk_alpm_config_string_options[] = {
 	{ "CacheDir", pk_alpm_config_add_cachedir },
 	{ "CleanMethod", pk_alpm_config_set_cleanmethod },
 	{ "DBPath", pk_alpm_config_set_dbpath },
+	{ "DownloadUser", pk_alpm_config_set_downloaduser },
 	{ "GPGDir", pk_alpm_config_set_gpgdir },
 	{ "LogFile", pk_alpm_config_set_logfile },
+	{ "ParallelDownloads", pk_alpm_config_set_paralleldownloads },
 	{ "RootDir", pk_alpm_config_set_root },
 	{ "XferCommand", pk_alpm_config_set_xfercmd },
 	{ NULL, NULL }
@@ -614,28 +677,12 @@ pk_alpm_config_parse (PkAlpmConfig *config, const gchar *filename,
 			continue;
 		}
 
-		/* ignore these instead of crashing */
+		/* ignore these instead of crashing; DisableSandbox (and its
+		 * Filesystem/Syscalls variants), DownloadUser, and
+		 * ParallelDownloads are now handled above via the boolean/string
+		 * dispatch tables. Usage/CacheServer are per-repo directives, not
+		 * yet wired up. */
 		if (g_strcmp0 (key, "CacheServer") == 0 && str != NULL) {
-			continue;
-		}
-
-		if (g_strcmp0 (key, "DisableSandbox") == 0) {
-			continue;
-		}
-
-		if (g_strcmp0 (key, "DisableSandboxFilesystem") == 0) {
-			continue;
-		}
-
-		if (g_strcmp0 (key, "DisableSandboxSyscalls") == 0) {
-			continue;
-		}
-
-		if (g_strcmp0 (key, "DownloadUser") == 0 && str != NULL) {
-			continue;
-		}
-
-		if (g_strcmp0 (key, "ParallelDownloads") == 0 && str != NULL) {
 			continue;
 		}
 
@@ -1000,6 +1047,30 @@ pk_alpm_config_configure_alpm (PkBackend *backend, PkAlpmConfig *config, GError 
 
 	alpm_option_set_checkspace (handle, config->checkspace);
 	alpm_option_set_usesyslog (handle, config->usesyslog);
+
+	/* alpm_option_{get,set}_disable_sandbox() (the "all components at
+	 * once" convenience wrapper documented in alpm.h) is declared in the
+	 * header but was found absent from the actual linked libalpm.so.16
+	 * on a real Arch/CachyOS system running a git-snapshot pacman build
+	 * (7.1.0.r9.g54d9411) — a header/library version mismatch, not a bug
+	 * here. DisableSandbox is therefore implemented by directly setting
+	 * the filesystem and syscalls components it's documented to control;
+	 * the network component (alpm_option_set_disable_sandbox_network())
+	 * was equally absent from that same build and has no pacman.conf
+	 * directive of its own regardless, so it is intentionally left alone. */
+	if (config->disablesandbox) {
+		config->disablesandboxfilesystem = TRUE;
+		config->disablesandboxsyscalls = TRUE;
+	}
+	alpm_option_set_disable_sandbox_filesystem (handle, config->disablesandboxfilesystem);
+	alpm_option_set_disable_sandbox_syscalls (handle, config->disablesandboxsyscalls);
+
+	/* only override alpm's own default when pacman.conf actually set one */
+	if (config->paralleldownloads != 0)
+		alpm_option_set_parallel_downloads (handle, config->paralleldownloads);
+
+	if (config->downloaduser != NULL)
+		alpm_option_set_sandboxuser (handle, config->downloaduser);
 
 	arches = g_strsplit (config->arch, ",", -1);
 	for (i = 0; arches[i]; i++) {

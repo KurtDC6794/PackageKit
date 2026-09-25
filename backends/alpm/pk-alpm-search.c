@@ -418,6 +418,15 @@ pk_backend_search_thread (PkBackendJob *job, GVariant* params, gpointer p)
 		if (pk_backend_job_is_cancelled (job))
 			break;
 
+		/* like pacman -Ss, which goes through alpm_db_search(): skip
+		 * repos whose pacman.conf Usage excludes Search */
+		if (role == PK_ROLE_ENUM_SEARCH_NAME || role == PK_ROLE_ENUM_SEARCH_DETAILS) {
+			int usage = ALPM_DB_USAGE_ALL;
+			alpm_db_get_usage (i->data, &usage);
+			if (!(usage & ALPM_DB_USAGE_SEARCH))
+				continue;
+		}
+
 		pk_backend_search_db (job, i->data, match_func, patterns, filters);
 	}
 out:

@@ -395,6 +395,17 @@ pk_alpm_pkg_find_update (alpm_pkg_t *pkg, const alpm_list_t *dbs)
 	return NULL;
 }
 
+/* sysupgrade skips repos whose pacman.conf Usage excludes Upgrade, and
+ * pacman -Qu marks their updates [ignored]; report them as blocked */
+static gboolean
+pk_alpm_update_db_allows_upgrade (alpm_pkg_t *pkg)
+{
+	int usage = ALPM_DB_USAGE_ALL;
+
+	alpm_db_get_usage (alpm_pkg_get_db (pkg), &usage);
+	return (usage & ALPM_DB_USAGE_UPGRADE) != 0;
+}
+
 static gboolean
 pk_alpm_update_is_pkg_downloaded (alpm_pkg_t *pkg)
 {
@@ -451,7 +462,8 @@ pk_backend_get_updates_thread (PkBackendJob *job, GVariant* params, gpointer p)
 			continue;
 		if (pk_backend_job_is_cancelled (job))
 			break;
-		if (pk_alpm_pkg_is_ignorepkg (backend, upgrade)) {
+		if (pk_alpm_pkg_is_ignorepkg (backend, upgrade) ||
+		    !pk_alpm_update_db_allows_upgrade (upgrade)) {
 			info = PK_INFO_ENUM_BLOCKED;
 		} else if (pk_alpm_pkg_is_syncfirst (priv->syncfirsts, upgrade)) {
 			info = PK_INFO_ENUM_IMPORTANT;

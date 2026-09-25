@@ -33,9 +33,6 @@
 static off_t transaction_dcomplete = 0;
 static off_t transaction_dtotal = 0;
 
-static alpm_pkg_t *dpkg = NULL;
-static GString *dfiles = NULL;
-
 static alpm_pkg_t *tpkg = NULL;
 static GString *toutput = NULL;
 
@@ -64,67 +61,61 @@ pk_alpm_pkg_has_basename (PkBackend *backend, alpm_pkg_t *pkg, const gchar *base
 	return FALSE;
 }
 
-static void
-pk_alpm_transaction_download_end (PkBackendJob *job)
-{
-	g_return_if_fail (dpkg != NULL);
-
-	pk_alpm_pkg_emit (job, dpkg, PK_INFO_ENUM_FINISHED);
-
-	/* tell DownloadPackages what files were downloaded */
-	if (dfiles != NULL) {
-		g_autofree gchar *package_id = pk_alpm_pkg_build_id (dpkg);
-		pk_backend_job_files (job, package_id, &dfiles->str);
-		g_string_free (dfiles, TRUE);
-	}
-
-	dpkg = NULL;
-	dfiles = NULL;
-}
-
-static void
-pk_alpm_transaction_download_start (PkBackendJob *job, const gchar *basename)
+/* libalpm downloads up to ParallelDownloads files at once and interleaves
+ * their events, so each event is matched to its package by filename rather
+ * than tracking a single "current" download */
+static alpm_pkg_t *
+pk_alpm_transaction_download_find (PkBackendJob *job, const gchar *basename)
 {
 	PkBackend *backend = pk_backend_job_get_backend (job);
 	PkBackendAlpmPrivate *priv = pk_backend_get_user_data (backend);
 	const alpm_list_t *i;
 
-	g_return_if_fail (basename != NULL);
-
-	/* continue or finish downloading the current package */
-	if (dpkg != NULL) {
-		if (pk_alpm_pkg_has_basename (backend, dpkg, basename)) {
-			if (dfiles != NULL) {
-				g_autofree gchar *path = NULL;
-				path = pk_alpm_resolve_path (job, basename);
-				g_string_append_printf (dfiles, ";%s", path);
-			}
-			return;
-		}
-		pk_alpm_transaction_download_end (job);
-		dpkg = NULL;
-	}
-
-	/* figure out what the next package is */
 	for (i = alpm_trans_get_add (priv->alpm); i != NULL; i = i->next) {
 		alpm_pkg_t *pkg = (alpm_pkg_t *) i->data;
 
-		if (pk_alpm_pkg_has_basename (backend, pkg, basename)) {
-			dpkg = pkg;
-			break;
-		}
+		if (pk_alpm_pkg_has_basename (backend, pkg, basename))
+			return pkg;
 	}
 
-	if (dpkg == NULL)
+	return NULL;
+}
+
+static void
+pk_alpm_transaction_download_start (PkBackendJob *job, const gchar *basename)
+{
+	alpm_pkg_t *pkg;
+
+	g_return_if_fail (basename != NULL);
+
+	pkg = pk_alpm_transaction_download_find (job, basename);
+	if (pkg != NULL)
+		pk_alpm_pkg_emit (job, pkg, PK_INFO_ENUM_DOWNLOADING);
+}
+
+static void
+pk_alpm_transaction_download_end (PkBackendJob *job, const gchar *basename, gint result)
+{
+	alpm_pkg_t *pkg;
+
+	g_return_if_fail (basename != NULL);
+
+	/* a failed download fails the whole transaction */
+	if (result < 0)
 		return;
 
-	pk_alpm_pkg_emit (job, dpkg, PK_INFO_ENUM_DOWNLOADING);
+	pkg = pk_alpm_transaction_download_find (job, basename);
+	if (pkg == NULL)
+		return;
 
-	/* start collecting files for the new package */
+	pk_alpm_pkg_emit (job, pkg, PK_INFO_ENUM_FINISHED);
+
+	/* tell DownloadPackages what files were downloaded */
 	if (pk_backend_job_get_role (job) == PK_ROLE_ENUM_DOWNLOAD_PACKAGES) {
-		g_autofree gchar *path = NULL;
-		path = pk_alpm_resolve_path (job, basename);
-		dfiles = g_string_new (path);
+		g_autofree gchar *package_id = pk_alpm_pkg_build_id (pkg);
+		g_autofree gchar *path = pk_alpm_resolve_path (job, basename);
+		gchar *files[] = { path, NULL };
+		pk_backend_job_files (job, package_id, files);
 	}
 }
 
@@ -149,6 +140,7 @@ pk_alpm_transaction_dlcb (void *ctx, const gchar *filename, alpm_download_event_
 	case ALPM_DOWNLOAD_COMPLETED:
 		pk_backend_job_set_percentage (job, 100);
 		transaction_dcomplete += completed->total;
+		pk_alpm_transaction_download_end (job, filename, completed->result);
 		break;
 
 	case ALPM_DOWNLOAD_PROGRESS:
@@ -1141,8 +1133,6 @@ pk_alpm_transaction_end (PkBackendJob *job, GError **error)
 	alpm_option_set_dlcb (priv->alpm, NULL, NULL);
 //	alpm_option_set_totaldlcb (priv->alpm, NULLa;
 
-	if (dpkg != NULL)
-		pk_alpm_transaction_download_end (job);
 	if (tpkg != NULL)
 		pk_alpm_transaction_output_end ();
 

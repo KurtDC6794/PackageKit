@@ -756,26 +756,46 @@ pk_alpm_transaction_event_cb (void *ctx, alpm_event_t *event)
 	}
 }
 
-static void
-pk_alpm_transaction_cancelled_cb (GCancellable *object, gpointer data)
-{
-	PkBackend *backend = pk_backend_job_get_backend (PK_BACKEND_JOB (data));
-	PkBackendAlpmPrivate *priv = pk_backend_get_user_data (backend);
-	alpm_trans_interrupt (priv->alpm);
-}
+/* how long to wait for another pacman/libalpm process to release
+ * db.lck before giving up, matching the apt backend */
+#define PK_ALPM_LOCK_WAIT_SECONDS 60
 
 gboolean
 pk_alpm_transaction_initialize (PkBackendJob* job, alpm_transflag_t flags, const gchar* dirname, GError** error)
 {
 	PkBackend *backend = pk_backend_job_get_backend (job);
 	PkBackendAlpmPrivate *priv = pk_backend_get_user_data (backend);
+	guint waited = 0;
 
-	if (alpm_trans_init (priv->alpm, flags) < 0) {
+	/* This backend does not support parallelization, so PackageKit's
+	 * scheduler-side LOCK_REQUIRED retry doesn't apply to it; wait here
+	 * instead, and report CANNOT_GET_LOCK only once the wait is over. A
+	 * failed alpm_trans_init() allocates nothing, so retrying is safe. */
+	while (alpm_trans_init (priv->alpm, flags) < 0) {
 		alpm_errno_t alpm_err = alpm_errno (priv->alpm);
-		g_set_error_literal (error, PK_ALPM_ERROR, alpm_err,
-				     alpm_strerror (alpm_err));
-		return FALSE;
+
+		if (pk_backend_job_is_cancelled (job)) {
+			g_set_error_literal (error, PK_ALPM_ERROR, PK_ALPM_ERR_CANCELLED,
+					     "cancelled while waiting for the package database lock");
+			return FALSE;
+		}
+
+		if (alpm_err != ALPM_ERR_HANDLE_LOCK || waited >= PK_ALPM_LOCK_WAIT_SECONDS) {
+			g_set_error_literal (error, PK_ALPM_ERROR, alpm_err,
+					     alpm_strerror (alpm_err));
+			return FALSE;
+		}
+
+		if (waited == 0) {
+			pk_backend_job_set_status (job, PK_STATUS_ENUM_WAITING_FOR_LOCK);
+			pk_backend_job_set_percentage (job, PK_BACKEND_PERCENTAGE_INVALID);
+		}
+		g_usleep (G_USEC_PER_SEC);
+		waited++;
 	}
+
+	if (waited > 0)
+		pk_backend_job_set_status (job, PK_STATUS_ENUM_SETUP);
 
 	g_assert (pkalpm_current_job == NULL);
 	pkalpm_current_job = job;
@@ -787,9 +807,11 @@ pk_alpm_transaction_initialize (PkBackendJob* job, alpm_transflag_t flags, const
 
 	alpm_option_set_dlcb (priv->alpm, pk_alpm_transaction_dlcb, NULL);
 
-	g_cancellable_connect (pk_backend_job_get_cancellable (job),
-			       G_CALLBACK (pk_alpm_transaction_cancelled_cb),
-			       job, NULL);
+	/* Deliberately no alpm_trans_interrupt() on cancel: libalpm only
+	 * honours it inside alpm_trans_commit(), where it stops between
+	 * packages and skips post-transaction hooks, leaving a partial
+	 * upgrade. Cancellation is polled via pk_backend_job_is_cancelled()
+	 * up to the start of the commit instead. */
 
 	return TRUE;
 }

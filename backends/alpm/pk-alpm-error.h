@@ -27,7 +27,8 @@
 
 enum {
 	PK_ALPM_ERR_CONFIG_INVALID = 0x10000,
-	PK_ALPM_ERR_PKG_HELD
+	PK_ALPM_ERR_PKG_HELD,
+	PK_ALPM_ERR_CANCELLED
 };
 
 void	 pk_alpm_error_emit	(PkBackendJob* job, GError* error);

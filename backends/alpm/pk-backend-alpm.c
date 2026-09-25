@@ -185,6 +185,15 @@ pk_backend_get_filters (PkBackend *backend)
 	return pk_bitfield_from_enums (PK_FILTER_ENUM_INSTALLED, -1);
 }
 
+void
+pk_backend_cancel (PkBackend *backend, PkBackendJob *job)
+{
+	/* PackageKit core cancels the job's GCancellable before calling
+	 * this; the backend polls it up to the start of the commit, and
+	 * ignores it once committing (see pk_alpm_transaction_initialize).
+	 * Exporting this is what makes core advertise the Cancel role. */
+}
+
 gchar **
 pk_backend_get_mime_types (PkBackend *backend)
 {

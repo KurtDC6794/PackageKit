@@ -147,6 +147,9 @@ pk_alpm_error_emit (PkBackendJob *job, GError *error)
 	case PK_ALPM_ERR_CONFIG_INVALID:
 		code = PK_ERROR_ENUM_FAILED_CONFIG_PARSING;
 		break;
+	case PK_ALPM_ERR_CANCELLED:
+		code = PK_ERROR_ENUM_TRANSACTION_CANCELLED;
+		break;
 	case PK_ALPM_ERR_PKG_HELD:
 		code = PK_ERROR_ENUM_CANNOT_REMOVE_SYSTEM_PACKAGE;
 		break;

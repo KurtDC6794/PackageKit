@@ -1121,16 +1121,11 @@ pk_alpm_config_configure_alpm (PkBackend *backend, PkAlpmConfig *config, GError 
 	alpm_option_set_checkspace (handle, config->checkspace);
 	alpm_option_set_usesyslog (handle, config->usesyslog);
 
-	/* alpm_option_{get,set}_disable_sandbox() (the "all components at
-	 * once" convenience wrapper documented in alpm.h) is declared in the
-	 * header but was found absent from the actual linked libalpm.so.16
-	 * on a real Arch/CachyOS system running a git-snapshot pacman build
-	 * (7.1.0.r9.g54d9411) — a header/library version mismatch, not a bug
-	 * here. DisableSandbox is therefore implemented by directly setting
-	 * the filesystem and syscalls components it's documented to control;
-	 * the network component (alpm_option_set_disable_sandbox_network())
-	 * was equally absent from that same build and has no pacman.conf
-	 * directive of its own regardless, so it is intentionally left alone. */
+	/* same mapping as pacman 7.1's own conf.c: DisableSandbox sets the
+	 * filesystem and syscalls components, and the network component has
+	 * no pacman.conf directive. The all-components wrapper
+	 * alpm_option_set_disable_sandbox() is declared in alpm.h but not
+	 * exported from libalpm.so.16, so it cannot be used here. */
 	if (config->disablesandbox) {
 		config->disablesandboxfilesystem = TRUE;
 		config->disablesandboxsyscalls = TRUE;

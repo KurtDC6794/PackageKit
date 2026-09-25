@@ -101,12 +101,20 @@ pk_backend_install_files_thread (PkBackendJob *job, GVariant* params, gpointer p
 	if (!pk_alpm_transaction_initialize (job, alpm_flags, NULL, &error))
 		goto out;
 
+	if (!pk_alpm_transaction_add_targets (job, full_paths, &error))
+		goto out;
+
 	/* queue all available upgrades to prevent partial upgrades, the same
 	 * way pk_backend_sync_thread() does for InstallPackages/UpdatePackages
 	 * in pk-alpm-sync.c; a local package file can depend on newer versions
 	 * of packages already on the system, and installing it without also
 	 * upgrading the rest of the system is exactly the partial-upgrade
-	 * state Arch does not support. */
+	 * state Arch does not support.
+	 *
+	 * This must run after the local files are added: sysupgrade skips
+	 * names already in the target list, but alpm_add_pkg() rejects a file
+	 * whose name sysupgrade already queued from a repo with
+	 * ALPM_ERR_TRANS_DUP_TARGET. */
 	if (alpm_sync_sysupgrade (priv->alpm, 0) < 0) {
 		g_set_error (&error, PK_ALPM_ERROR, alpm_errno (priv->alpm),
 			     "sysupgrade: %s",
@@ -114,8 +122,7 @@ pk_backend_install_files_thread (PkBackendJob *job, GVariant* params, gpointer p
 		goto out;
 	}
 
-	if (pk_alpm_transaction_add_targets (job, full_paths, &error) &&
-	    pk_alpm_transaction_simulate (job, &error)) {
+	if (pk_alpm_transaction_simulate (job, &error)) {
 		if (pk_bitfield_contain (flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) { /* simulation */
 			pk_alpm_transaction_packages (job);
 		}
